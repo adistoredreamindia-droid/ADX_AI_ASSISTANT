@@ -1,203 +1,58 @@
 package com.adx.assistant;
 
-import android.app.Activity;
-import android.os.Bundle;
 import android.Manifest;
+import android.app.*;
+import android.content.*;
 import android.content.pm.PackageManager;
 import android.graphics.*;
-import android.graphics.drawable.ColorDrawable;
+import android.os.*;
+import android.speech.*;
+import android.speech.tts.TextToSpeech;
 import android.view.*;
-import android.widget.Toast;
+import android.widget.*;
+import org.json.*;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.*;
 
 public class MainActivity extends Activity {
-    ADXView view;
+    static final String PREF="adx_private", KEY="gemini_api_key", MODEL="gemini-2.5-flash";
+    SharedPreferences pref; ExecutorService pool=Executors.newSingleThreadExecutor(); Handler ui=new Handler(Looper.getMainLooper());
+    TextToSpeech tts; SpeechRecognizer recognizer; ADXView v;
+    @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(Color.rgb(6,15,28));getWindow().setNavigationBarColor(Color.rgb(12,22,39));pref=getSharedPreferences(PREF,0);tts=new TextToSpeech(this,s->{if(s==TextToSpeech.SUCCESS)tts.setLanguage(Locale.ENGLISH);});v=new ADXView(this);setContentView(v);if(Build.VERSION.SDK_INT>=23&&checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO,Manifest.permission.CAMERA},10);}
+    boolean keySet(){return !pref.getString(KEY,"").trim().isEmpty();}
+    void keyDialog(){final EditText e=new EditText(this);e.setSingleLine(true);e.setHint("AIza...");e.setText(pref.getString(KEY,""));LinearLayout box=new LinearLayout(this);box.setPadding(35,5,35,0);box.addView(e,new LinearLayout.LayoutParams(-1,-2));new AlertDialog.Builder(this).setTitle("Gemini API key").setMessage("Paste your Gemini API key. ADX stores it only on this phone and uses it to call Google Gemini directly.").setView(box).setNegativeButton("Remove",(d,w)->{pref.edit().remove(KEY).apply();v.invalidate();}).setPositiveButton("Save & test",(d,w)->{String k=e.getText().toString().trim();if(k.isEmpty()){toast("API key is empty");return;}pref.edit().putString(KEY,k).apply();v.invalidate();gemini(k,"Reply exactly: ADX connected",false);}).show();}
+    void chatInput(){if(!keySet()){toast("First add Gemini API key in Settings");v.screen=3;v.invalidate();return;}final EditText e=new EditText(this);e.setHint("Ask ADX anything…");e.setMinLines(2);new AlertDialog.Builder(this).setTitle("Ask ADX").setView(e).setNegativeButton("Cancel",null).setPositiveButton("Send",(d,w)->{String q=e.getText().toString().trim();if(!q.isEmpty()){v.user=q;v.answer="";v.screen=2;v.invalidate();gemini(pref.getString(KEY,""),q,true);}}).show();}
+    void voice(){if(!keySet()){toast("First add Gemini API key in Settings");v.screen=3;v.invalidate();return;}if(!SpeechRecognizer.isRecognitionAvailable(this)){toast("Voice recognition is not available");return;}if(recognizer!=null)recognizer.destroy();recognizer=SpeechRecognizer.createSpeechRecognizer(this);recognizer.setRecognitionListener(new RecognitionListener(){public void onReadyForSpeech(Bundle b){toast("Listening…");}public void onBeginningOfSpeech(){}public void onRmsChanged(float x){}public void onBufferReceived(byte[] b){}public void onEndOfSpeech(){}public void onError(int x){toast("Voice error. Try again");}public void onResults(Bundle b){ArrayList<String>a=b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);if(a!=null&&!a.isEmpty()){v.user=a.get(0);v.answer="";v.screen=2;v.invalidate();gemini(pref.getString(KEY,""),v.user,true);}}public void onPartialResults(Bundle b){}public void onEvent(int x,Bundle b){}});Intent i=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);i.putExtra(RecognizerIntent.EXTRA_LANGUAGE,"hi-IN");recognizer.startListening(i);}
+    void gemini(String k,String q,boolean show){pool.execute(()->{String out;try{URL u=new URL("https://generativelanguage.googleapis.com/v1beta/models/"+MODEL+":generateContent?key="+URLEncoder.encode(k,"UTF-8"));HttpURLConnection c=(HttpURLConnection)u.openConnection();c.setRequestMethod("POST");c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json; charset=UTF-8");JSONObject body=new JSONObject().put("contents",new JSONArray().put(new JSONObject().put("role","user").put("parts",new JSONArray().put(new JSONObject().put("text",q)))));try(OutputStream os=c.getOutputStream()){os.write(body.toString().getBytes(StandardCharsets.UTF_8));}int code=c.getResponseCode();InputStream in=code>=200&&code<300?c.getInputStream():c.getErrorStream();String json=read(in);if(code<200||code>=300)throw new Exception("HTTP "+code+": "+json);JSONObject root=new JSONObject(json);JSONArray cs=root.optJSONArray("candidates");if(cs==null||cs.length()==0)throw new Exception("No Gemini response");out=cs.getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).optString("text","");c.disconnect();}catch(Exception e){out="ERROR: "+e.getMessage();}String result=out;ui.post(()->{if(result.startsWith("ERROR:")){toast(result.substring(6).trim());if(show){v.answer="Gemini connection failed. Check key/internet.";v.invalidate();}}else if(show){v.answer=result;v.invalidate();speak(result);}else toast(result);});});}
+    String read(InputStream in)throws Exception{if(in==null)return "";BufferedReader b=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8));StringBuilder s=new StringBuilder();String x;while((x=b.readLine())!=null)s.append(x);b.close();return s.toString();}
+    void speak(String s){if(tts!=null){tts.setLanguage(Locale.ENGLISH);tts.speak(s,TextToSpeech.QUEUE_FLUSH,null,"ADX");}}
+    void toast(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
+    @Override protected void onDestroy(){if(recognizer!=null)recognizer.destroy();if(tts!=null)tts.shutdown();pool.shutdownNow();super.onDestroy();}
 
-    @Override public void onCreate(Bundle b) {
-        super.onCreate(b);
-        getWindow().setStatusBarColor(Color.rgb(7, 16, 29));
-        getWindow().setNavigationBarColor(Color.rgb(12, 22, 39));
-        view = new ADXView();
-        setContentView(view);
-        if (android.os.Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA}, 10);
-        }
-    }
-
-    class ADXView extends View {
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        int screen = 0; // 0 home, 1 memories, 2 chat, 3 settings, 4 rules
-        boolean drawer = false;
-        int blue = Color.rgb(67, 165, 226);
-        int text = Color.rgb(245, 247, 252);
-        int muted = Color.rgb(150, 166, 193);
-        int panel = Color.rgb(27, 37, 58);
-        int darkPanel = Color.rgb(18, 31, 51);
-        RectF r = new RectF();
-
-        ADXView(){ super(MainActivity.this); setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
-
-        void txt(Canvas c, String s, float x, float y, float size, int col, boolean bold){
-            p.setStyle(Paint.Style.FILL); p.setColor(col); p.setTextSize(size);
-            p.setTypeface(Typeface.create(Typeface.DEFAULT, bold ? Typeface.BOLD : Typeface.NORMAL));
-            c.drawText(s, x, y, p);
-        }
-        void round(Canvas c,float l,float t,float rr,float bb,int col,float rad){
-            p.setStyle(Paint.Style.FILL); p.setColor(col); p.setShadowLayer(10,0,5,0x55000000);
-            r.set(l,t,rr,bb); c.drawRoundRect(r,rad,rad,p); p.clearShadowLayer();
-        }
-        void strokeRound(Canvas c,float l,float t,float rr,float bb,int col,float rad){
-            p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(2); p.setColor(col); r.set(l,t,rr,bb); c.drawRoundRect(r,rad,rad,p); p.setStyle(Paint.Style.FILL);
-        }
-        void line(Canvas c,float x1,float y1,float x2,float y2,int col){p.setColor(col);p.setStrokeWidth(1.5f);c.drawLine(x1,y1,x2,y2,p);}
-
-        @Override protected void onDraw(Canvas c){
-            super.onDraw(c);
-            c.drawColor(Color.rgb(7,16,29));
-            if(screen==0) home(c); else if(screen==1) memories(c); else if(screen==2) chat(c); else if(screen==3) settings(c); else rules(c);
-            if(drawer) drawDrawer(c);
-        }
-
-        void top(Canvas c,String title,boolean back){
-            txt(c, back ? "‹" : "☰", 38, 70, 48, text, false);
-            float w=p.measureText(title); txt(c,title,(getWidth()-w)/2,66,30,text,true);
-            txt(c,"•",getWidth()-88,57,28,blue,true);
-            txt(c,"ADX",getWidth()-69,61,15,text,true);
-        }
-
-        void home(Canvas c){
-            top(c,"Today",false);
-            round(c,28,92,getWidth()-28,178,darkPanel,26);
-            txt(c,"FREE MODE  •  PERSONAL ADX",52,124,14,blue,true);
-            txt(c,"Voice, memory, tools and phone actions",52,153,16,muted,false);
-            txt(c,"Good afternoon,",45,226,27,muted,true);
-            txt(c,"Aditya",45,278,46,text,true);
-            txt(c,"ADX is ready to work.",45,314,20,muted,false);
-
-            round(c,45,350,getWidth()-45,535,Color.rgb(10,35,55),35);
-            txt(c,"ADX",getWidth()/2-34,425,28,blue,true);
-            txt(c,"Personal AI",getWidth()/2-62,455,18,muted,false);
-            txt(c,"Ask, speak, or give me a task",getWidth()/2-118,492,16,text,false);
-
-            cardButton(c,30,565,250,635,"Focus","◎");
-            cardButton(c,270,565,490,635,"Tasks","✓");
-            cardButton(c,510,565,getWidth()-30,635,"News","▤");
-            smallInfo(c,30,655,250,755,"Weather","—","No data");
-            smallInfo(c,270,655,490,755,"Today","9","Wed, Sep");
-            smallInfo(c,510,655,getWidth()-30,755,"Mood","Happy","Upbeat");
-            round(c,30,getHeight()-160,getWidth()-30,getHeight()-92,darkPanel,30);
-            txt(c,"⌕",52,getHeight()-117,27,muted,false);
-            txt(c,"Ask ADX anything…",92,getHeight()-119,19,muted,false);
-            txt(c,"➤",getWidth()-72,getHeight()-116,26,muted,false);
-            bottom(c,0);
-        }
-
-        void cardButton(Canvas c,float l,float t,float rr,float bb,String label,String icon){
-            round(c,l,t,rr,bb,Color.rgb(20,31,53),26); txt(c,icon,l+18,t+44,22,muted,true); txt(c,label,l+55,t+45,18,text,true);
-        }
-        void smallInfo(Canvas c,float l,float t,float rr,float bb,String a,String b,String d){
-            round(c,l,t,rr,bb,Color.rgb(27,39,61),25); txt(c,a,l+18,t+30,15,muted,false); txt(c,b,l+18,t+68,26,text,true); txt(c,d,l+18,t+90,14,muted,false);
-        }
-
-        void memories(Canvas c){
-            top(c,"Memories",false);
-            txt(c,"Trained tasks",38,138,29,text,true);
-            memoryCard(c,38,165,"gemini se poochho","8 steps  •  sawaal  •  built-in");
-            memoryCard(c,38,255,"chatgpt se poochho","8 steps  •  sawaal  •  built-in");
-            memoryCard(c,38,345,"gemini image","17 steps  •  image prompt  •  built-in");
-            memoryCard(c,38,435,"chatgpt image","14 steps  •  image prompt  •  built-in");
-            round(c,38,535,getWidth()-38,625,panel,28); txt(c,"☁",62,584,27,muted,true); txt(c,"Backup & restore",110,575,21,text,true); txt(c,"Move memories and chats to another phone",110,601,15,muted,false); txt(c,"›",getWidth()-62,588,34,muted,false);
-            bottom(c,1);
-        }
-        void memoryCard(Canvas c,float l,float t,String a,String b){
-            round(c,l,t,getWidth()-38,t+76,panel,26); txt(c,a,l+30,t+38,22,text,true); txt(c,b,l+30,t+62,14,blue,false); txt(c,"▶ Play",getWidth()-142,t+46,16,blue,true);
-        }
-
-        void chat(Canvas c){
-            top(c,"Chat",false);
-            txt(c,"ADX",32,130,20,blue,true); txt(c,"Hello! I am ready.",32,162,22,text,true);
-            txt(c,"Ask questions, plan tasks, or control your phone.",32,190,15,muted,false);
-            round(c,28,235,getWidth()-28,320,Color.rgb(21,34,54),24); txt(c,"You can connect an AI provider in Settings.",48,270,16,muted,false); txt(c,"Your API key stays on your device.",48,296,14,muted,false);
-            round(c,28,getHeight()-150,getWidth()-28,getHeight()-88,darkPanel,30); txt(c,"Type a message…",55,getHeight()-112,18,muted,false); txt(c,"➤",getWidth()-70,getHeight()-109,25,blue,true);
-            bottom(c,2);
-        }
-
-        void settings(Canvas c){
-            top(c,"Settings",true);
-            txt(c,"PERSONAL",48,120,16,muted,true);
-            setting(c,38,140,"Personal","Your name, language and AI provider","●");
-            txt(c,"ASSISTANT",48,250,16,muted,true);
-            setting(c,38,270,"ADX","Persona, voice and assistant behavior","◉");
-            setting(c,38,350,"Skills","Installed tools and routines","ϟ");
-            setting(c,38,430,"Sub-agents","Coding and background agents","●");
-            txt(c,"WORK & MESSAGES",48,530,16,muted,true);
-            setting(c,38,550,"Email","Connect an email account","✉");
-            setting(c,38,630,"WhatsApp & reports","Message workflows and report formats","●");
-            setting(c,38,710,"Social media","Captions and scheduled posts","↗");
-        }
-        void setting(Canvas c,float l,float t,String a,String b,String icon){
-            round(c,l,t,getWidth()-38,t+68,panel,25); txt(c,icon,l+22,t+40,22,blue,true); txt(c,a,l+70,t+30,20,text,true); txt(c,b,l+70,t+53,13,muted,false); txt(c,"›",getWidth()-65,t+42,30,muted,false);
-        }
-
-        void rules(Canvas c){
-            top(c,"ADX Rules",true);
-            txt(c,"Rules you set for ADX",38,130,26,text,true);
-            txt(c,"Tell ADX how you want it to behave. For example:",38,166,16,muted,false);
-            txt(c,"keep answers short • call me sir • ask before sending",38,192,15,muted,false);
-            txt(c,"messages",38,215,15,muted,false);
-            round(c,38,245,getWidth()-38,305,blue,30); txt(c,"+  Add rule",getWidth()/2-65,284,20,Color.WHITE,true);
-            txt(c,"No rules yet — ADX is using its defaults.",38,365,17,muted,false);
-            txt(c,"Rules never override permissions or safety checks.",38,398,15,muted,false);
-        }
-
-        void bottom(Canvas c,int selected){
-            int y=getHeight()-72; line(c,0,y-2,getWidth(),y-2,Color.rgb(35,50,75));
-            nav(c,55,y,"⌂","Home",selected==0); nav(c,165,y,"◎","Scan",false); nav(c,getWidth()/2,y,"●","Voice",false); nav(c,getWidth()-165,y,"◉","Memory",selected==1); nav(c,getWidth()-55,y,"▰","Chat",selected==2);
-        }
-        void nav(Canvas c,float x,float y,String icon,String label,boolean on){
-            int col=on?blue:muted; float iw=p.measureText(icon); txt(c,icon,x-10,y-25,24,col,true); txt(c,label,x-p.measureText(label)/2,y-2,13,col,on);
-        }
-
-        void drawDrawer(Canvas c){
-            p.setColor(0x99000000); c.drawRect(0,0,getWidth(),getHeight(),p);
-            round(c,0,0,Math.min(getWidth()-70,690),getHeight(),Color.rgb(19,29,49),34);
-            txt(c,"ADX",48,75,34,text,true); txt(c,"Personal AI Assistant",48,103,16,muted,false);
-            drawerItem(c,140,"⌂","ADX Home",0);
-            drawerItem(c,207,"◉","Memories",1);
-            drawerItem(c,274,"▰","Chat",2);
-            txt(c,"PRODUCTIVITY",55,345,15,muted,true);
-            drawerItem(c,375,"⌁","Markets",-1); drawerItem(c,442,"▤","Documents",-1); drawerItem(c,509,"<> ","Website / Coding",-1); drawerItem(c,576,"✎","Study / Whiteboard",-1);
-            txt(c,"SYSTEM",55,640,15,muted,true);
-            drawerItem(c,675,"⚙","Settings",3); drawerItem(c,742,"✓","ADX Rules",4);
-            txt(c,"OTHER",55,805,15,muted,true);
-            drawerItem(c,840,"▣","Privacy",-1); drawerItem(c,907,"i","About",-1);
-            txt(c,"ADX  •  Independent personal assistant",45,getHeight()-28,13,muted,false);
-        }
-        void drawerItem(Canvas c,int y,String icon,String label,int target){
-            round(c,28,y-40,Math.min(getWidth()-95,650),y+25,Color.rgb(31,41,62),31); txt(c,icon,52,y,22,muted,true); txt(c,label,105,y,20,text,false);
-        }
-
-        @Override public boolean onTouchEvent(android.view.MotionEvent e){
-            if(e.getAction()!=MotionEvent.ACTION_UP) return true;
-            float x=e.getX(), y=e.getY();
-            if(drawer){
-                if(x<690){
-                    if(y>105&&y<240){screen=0;drawer=false;}
-                    else if(y>=240&&y<320){screen=2;drawer=false;}
-                    else if(y>=650&&y<730){screen=3;drawer=false;}
-                    else if(y>=730&&y<800){screen=4;drawer=false;}
-                    else if(y<120){drawer=false;}
-                    invalidate();
-                } else {drawer=false;invalidate();}
-                return true;
-            }
-            if(screen==0 && y<100 && x<120){drawer=true;invalidate();return true;}
-            if(screen!=0 && y<100 && x<120){screen=0;invalidate();return true;}
-            if(y>getHeight()-90){
-                if(x<115) screen=0; else if(x>getWidth()-115) screen=2; else if(x>getWidth()/2+70) screen=1; invalidate(); return true;
-            }
-            if(screen==0 && y>330 && y<545){ Toast.makeText(MainActivity.this,"Voice mode is ready. Add your AI provider in Settings.",Toast.LENGTH_SHORT).show(); }
-            if(screen==4 && y>235&&y<325){ Toast.makeText(MainActivity.this,"Rule editor will be available in the next ADX build.",Toast.LENGTH_SHORT).show(); }
-            return true;
-        }
+    class ADXView extends View{
+        Paint p=new Paint(3);RectF r=new RectF();int screen=0;boolean drawer=false;String user="",answer="";int blue=Color.rgb(64,165,226),white=Color.rgb(245,247,252),muted=Color.rgb(150,166,193),panel=Color.rgb(27,37,58),dark=Color.rgb(18,31,51);
+        ADXView(Context c){super(c);setLayerType(View.LAYER_TYPE_SOFTWARE,null);}
+        void t(Canvas c,String s,float x,float y,float z,int col,boolean b){p.setStyle(Paint.Style.FILL);p.setColor(col);p.setTextSize(z);p.setTypeface(Typeface.create(Typeface.DEFAULT,b?Typeface.BOLD:Typeface.NORMAL));c.drawText(s,x,y,p);}
+        void rr(Canvas c,float l,float top,float right,float bot,int col,float rad){p.setColor(col);p.setStyle(Paint.Style.FILL);p.setShadowLayer(9,0,4,0x44000000);r.set(l,top,right,bot);c.drawRoundRect(r,rad,rad,p);p.clearShadowLayer();}
+        void header(Canvas c,String title){t(c,screen==0?"☰":"‹",32,70,44,white,false);p.setTextSize(29);t(c,title,(getWidth()-p.measureText(title))/2,66,29,white,true);t(c,"•",getWidth()-90,57,25,blue,true);t(c,"ADX",getWidth()-69,61,14,white,true);}
+        @Override protected void onDraw(Canvas c){c.drawColor(Color.rgb(7,16,29));if(screen==0)home(c);else if(screen==1)memory(c);else if(screen==2)chat(c);else if(screen==3)settings(c);else rules(c);if(drawer)drawer(c);}
+        void home(Canvas c){header(c,"Today");rr(c,22,88,getWidth()-22,158,dark,23);t(c,keySet()?"GEMINI CONNECTED  •  PERSONAL ADX":"SETUP REQUIRED  •  PERSONAL ADX",40,116,13,blue,true);t(c,keySet()?"Voice, memory and Gemini chat are ready":"Add your Gemini API key in Settings to start",40,143,14,muted,false);t(c,"Good afternoon,",36,208,25,muted,true);t(c,"Aditya",36,255,42,white,true);t(c,"ADX is ready to work.",36,288,18,muted,false);rr(c,34,322,getWidth()-34,490,Color.rgb(10,35,55),33);t(c,"ADX",getWidth()/2-30,388,27,blue,true);t(c,keySet()?"Gemini AI Assistant":"Personal AI Assistant",getWidth()/2-92,420,17,muted,false);t(c,keySet()?"Ask, speak, and get answers":"Add API key to activate",getWidth()/2-100,452,15,white,false);button(c,24,515,190,578,"Focus");button(c,205,515,371,578,"Tasks");button(c,386,515,getWidth()-24,578,"News");info(c,24,598,190,690,"Weather","—","No data");info(c,205,598,371,690,"Today","9","Wed, Sep");info(c,386,598,getWidth()-24,690,"Mood","Happy","Upbeat");rr(c,24,getHeight()-145,getWidth()-24,getHeight()-84,dark,28);t(c,"⌕",44,getHeight()-107,24,muted,false);t(c,"Ask ADX anything…",80,getHeight()-109,17,muted,false);t(c,"➤",getWidth()-64,getHeight()-106,24,blue,true);bottom(c,0);}
+        void button(Canvas c,float l,float top,float right,float bot,String s){rr(c,l,top,right,bot,Color.rgb(20,31,53),23);t(c,s,l+35,top+40,16,white,true);}
+        void info(Canvas c,float l,float top,float right,float bot,String a,String b,String d){rr(c,l,top,right,bot,Color.rgb(27,39,61),22);t(c,a,l+14,top+28,13,muted,false);t(c,b,l+14,top+62,23,white,true);t(c,d,l+14,top+82,12,muted,false);}
+        void memory(Canvas c){header(c,"Memories");t(c,"Trained tasks",34,132,28,white,true);card(c,34,158,"gemini se poochho");card(c,34,245,"chatgpt se poochho");card(c,34,332,"gemini image");rr(c,34,430,getWidth()-34,515,panel,27);t(c,"☁",55,480,25,muted,true);t(c,"Backup & restore",98,471,20,white,true);t(c,"Move memories and chats to another phone",98,496,13,muted,false);bottom(c,1);}
+        void card(Canvas c,float l,float top,String s){rr(c,l,top,getWidth()-34,top+72,panel,25);t(c,s,l+26,top+36,20,white,true);t(c,"AI prompt  •  built-in",l+26,top+59,13,blue,false);t(c,"▶ Play",getWidth()-120,top+44,15,blue,true);}
+        void chat(Canvas c){header(c,"Chat");if(user.isEmpty()){t(c,"ADX",30,130,20,blue,true);t(c,"Hello! I am ready.",30,164,22,white,true);t(c,keySet()?"Ask me anything using Gemini.":"Add your Gemini API key in Settings.",30,192,15,muted,false);}else{rr(c,34,118,getWidth()-34,192,Color.rgb(20,35,56),22);t(c,"You",54,145,13,blue,true);wrap(c,user,54,168,15,white);if(!answer.isEmpty()){rr(c,34,220,getWidth()-34,420,panel,22);t(c,"ADX",54,247,13,blue,true);wrap(c,answer,54,272,15,white);}}rr(c,28,getHeight()-150,getWidth()-28,getHeight()-88,dark,30);t(c,"Type a message…",52,getHeight()-112,17,muted,false);t(c,"➤",getWidth()-70,getHeight()-109,24,blue,true);bottom(c,2);}
+        void wrap(Canvas c,String s,float x,float y,float z,int col){p.setTextSize(z);String line="";float yy=y;for(String w:s.split(" ")){String n=line.isEmpty()?w:line+" "+w;if(p.measureText(n)>getWidth()-x-45){t(c,line,x,yy,z,col,false);line=w;yy+=z+7;if(yy>getHeight()-220)break;}else line=n;}if(!line.isEmpty())t(c,line,x,yy,z,col,false);}
+        void settings(Canvas c){header(c,"Settings");t(c,"PERSONAL",45,120,16,muted,true);setting(c,34,140,"Personal","Your name, language and AI provider","●");t(c,"ASSISTANT",45,238,16,muted,true);setting(c,34,258,"ADX","Persona, voice and assistant behavior","◉");setting(c,34,336,"Gemini API Key",keySet()?"Connected • tap to change key":"Not connected • tap to add key","ϟ");setting(c,34,414,"Voice","Hindi / English voice input and spoken answers","♬");t(c,"WORK & TOOLS",45,518,16,muted,true);setting(c,34,538,"Documents","PDF, Word, Excel and file tools","▤");setting(c,34,616,"Website / Coding","Build and explain websites and code","<>");setting(c,34,694,"Study / Whiteboard","Learn, explain and draw","✎");}
+        void setting(Canvas c,float l,float top,String a,String b,String icon){rr(c,l,top,getWidth()-34,top+66,panel,24);t(c,icon,l+20,top+39,21,blue,true);t(c,a,l+67,top+29,19,white,true);t(c,b,l+67,top+51,12,muted,false);t(c,"›",getWidth()-61,top+41,28,muted,false);}
+        void rules(Canvas c){header(c,"ADX Rules");t(c,"Rules you set for ADX",34,130,25,white,true);t(c,"Tell ADX how you want it to behave.",34,164,15,muted,false);rr(c,34,218,getWidth()-34,278,blue,30);t(c,"+  Add rule",getWidth()/2-58,256,20,Color.WHITE,true);t(c,"No rules yet — ADX is using its defaults.",34,340,16,muted,false);}
+        void bottom(Canvas c,int sel){int y=getHeight()-72;p.setColor(Color.rgb(35,50,75));c.drawRect(0,y-2,getWidth(),y,p);nav(c,55,y,"⌂","Home",sel==0);nav(c,165,y,"◎","Scan",false);nav(c,getWidth()/2,y,"●","Voice",false);nav(c,getWidth()-165,y,"◉","Memory",sel==1);nav(c,getWidth()-55,y,"▰","Chat",sel==2);}
+        void nav(Canvas c,float x,float y,String i,String s,boolean on){int col=on?blue:muted;t(c,i,x-10,y-25,23,col,true);p.setTextSize(13);t(c,s,x-p.measureText(s)/2,y-2,13,col,on);}
+        void drawer(Canvas c){p.setColor(0x99000000);c.drawRect(0,0,getWidth(),getHeight(),p);float right=Math.min(getWidth()-45,690);rr(c,0,0,right,getHeight(),Color.rgb(19,29,49),34);t(c,"ADX",45,70,33,white,true);t(c,"Personal AI Assistant",45,98,15,muted,false);item(c,140,"⌂","ADX Home");item(c,207,"◉","Memories");item(c,274,"▰","Chat");t(c,"PRODUCTIVITY",52,345,15,muted,true);item(c,375,"⌁","Markets");item(c,442,"▤","Documents");item(c,509,"<>","Website / Coding");item(c,576,"✎","Study / Whiteboard");t(c,"SYSTEM",52,640,15,muted,true);item(c,675,"⚙","Settings");item(c,742,"✓","ADX Rules");t(c,"OTHER",52,805,15,muted,true);item(c,840,"▣","Privacy");item(c,907,"i","About");t(c,"ADX  •  Independent personal assistant",42,getHeight()-28,12,muted,false);}
+        void item(Canvas c,int y,String i,String s){rr(c,25,y-40,Math.min(getWidth()-75,650),y+24,Color.rgb(31,41,62),31);t(c,i,50,y,21,muted,true);t(c,s,102,y,19,white,false);}
+        @Override public boolean onTouchEvent(MotionEvent e){if(e.getAction()!=MotionEvent.ACTION_UP)return true;float x=e.getX(),y=e.getY();if(drawer){if(x<Math.min(getWidth()-45,690)){if(y>105&&y<175){screen=0;drawer=false;}else if(y>=175&&y<240){screen=1;drawer=false;}else if(y>=240&&y<315){screen=2;drawer=false;}else if(y>=650&&y<720){screen=3;drawer=false;}else if(y>=720&&y<795){screen=4;drawer=false;}else if(y<120)drawer=false;invalidate();}else{drawer=false;invalidate();}return true;}if(y<105&&x<120){if(screen==0)drawer=true;else screen=0;invalidate();return true;}if(screen==3&&y>=320&&y<=420){keyDialog();return true;}if(screen==0&&y>getHeight()-175&&y<getHeight()-70){chatInput();return true;}if(screen==0&&y>310&&y<500){voice();return true;}if(screen==2&&y>getHeight()-165){chatInput();return true;}if(y>getHeight()-85){if(x<110)screen=0;else if(x>getWidth()-110)screen=2;else if(x>getWidth()/2+70)screen=1;else if(x>getWidth()/2-70&&x<getWidth()/2+70)voice();invalidate();return true;}return true;}
     }
 }
